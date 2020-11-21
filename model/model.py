@@ -10,6 +10,12 @@ device2 = torch.device("cuda:2" if torch.cuda.is_available() else "cpu")
 device3 = torch.device("cuda:3" if torch.cuda.is_available() else "cpu")
 # device = torch.device("cpu")
 
+def Fold(data, dim1, dim2):
+    return torch.reshape(data, (dim1, dim2, data.size()[1], data.size()[2]))
+
+def Unfold(data, dim1, dim2):
+    return torch.reshape(data, (dim1*dim2, data.size()[2], data.size()[3]))
+
 class MultiHeadSelfAttention(nn.Module):
     def __init__(self, head_num, embedding_dim, output_dim):
         super(MultiHeadSelfAttention, self).__init__()
@@ -17,8 +23,8 @@ class MultiHeadSelfAttention(nn.Module):
         self.input_dim = embedding_dim
         self.head_output_dim = output_dim
 
-        self.Q = nn.ParameterList([nn.Parameter(torch.randn(self.input_dim, self.input_dim)) for _ in range(self.head_num)])
-        self.V = nn.ParameterList([nn.Parameter(torch.randn(self.head_output_dim, self.input_dim)) for _ in range(self.head_num)])
+        self.Q = nn.ParameterList([nn.Parameter(torch.FloatTensor(np.random.rand(self.input_dim, self.input_dim))) for _ in range(self.head_num)])
+        self.V = nn.ParameterList([nn.Parameter(torch.FloatTensor(np.random.rand(self.head_output_dim, self.input_dim))) for _ in range(self.head_num)])
     
     def forward(self, title_embedding):
         '''
@@ -31,14 +37,14 @@ class MultiHeadSelfAttention(nn.Module):
         input_dim_num = len(title_embedding.size())
 
         if input_dim_num == 4:
-            #print(title_embedding.size(), self.Q[0].size())
             title_embedding = torch.reshape(title_embedding, (bs*browsed_num, title_embedding.size()[2], title_embedding.size()[3]))
-            #print(title_embedding.size(), self.Q[0].size())
 
-        # assert title_embedding.size()[2] == self.input_dim 
         H = []
         for k in range(self.head_num):
-
+            # #print("title_embedding size:", title_embedding.size())
+            # #print('Q size:', self.Q[k].size())
+            # if k == 0: 
+                #print(type(title_embedding), type(self.Q[k]))
             alpha = torch.matmul(title_embedding, self.Q[k])
             alpha = torch.bmm(alpha, title_embedding.transpose(1,2))
             alpha_k = torch.softmax(alpha, dim=2)
@@ -52,7 +58,7 @@ class MultiHeadSelfAttention(nn.Module):
         if input_dim_num == 4:
             H = torch.reshape(H, (bs, browsed_num, H.size()[1], H.size()[2]))
 
-        #print(H.size())
+        ##print(H.size())
         return H
 
 class AdditiveAttention(nn.Module):
@@ -125,14 +131,16 @@ class NRMS_NewsEncoder(nn.Module):
                 ] * batch_size
             ]
         '''
-        ##print(1.1)
+        ###print(1.1)
         # title_embedding = nn.Dropout(self.dropout)(self.embedding(torch.Tensor(title)))
+        #print('title size:', title.size())
+        #print('embedding:', self.embedding)
         title_embedding = self.embedding(title)
-        ##print(1.2)
+        ###print(1.2)
         selfatt_output = nn.Dropout(self.dropout)(self.MultiHeadSelfAttention(title_embedding))
-        ##print(1.3)
+        ###print(1.3)
         u = self.attention(selfatt_output)
-        ##print(1.4)
+        ###print(1.4)
         return u
 
 class NRMS_UserEncoder(nn.Module):
@@ -194,26 +202,27 @@ class NRMS(nn.Module):
         click_prob = torch.sum(candidate_encode.mul(user_encode.unsqueeze(1)), dim=2)
         return click_prob
 
-    def get_model_output(self, history):
+    def get_news_encode(self, history):
         '''
-        input:
-            [uid, history, candidate[[news1],[news2],...], label[0,1,...]]
-        output:
-            [
-                [u],...,[u] #impression size*sample num
-            ]
+        input: [bs * title_word_num]
+        output: [bs * embedding_dim]
         '''
-        batch_size = len(history)
-        #print('history: ', history.size())
-        history_encode = self.NewsEncoder(history)
-        #print('history_encode: ', history_encode.size())
-        user_encode = self.UserEncoder(history_encode)
-        #print('user_encode: ', user_encode.size())
-        return user_encode
+        news_encode = self.NewsEncoder(history)
+        return news_encode
+
+    def get_user_encode(self, news_encode):
+        '''
+        input: [bs * browsed_num * embedding_dim]
+        output: [bs * embedding_size]
+        '''
+        return self.UserEncoder(news_encode)
     
     def get_click_probs(self, u, candidate):
-        # return torch.sum(torch.Tensor(u.to(device0)).mul(torch.Tensor(candidate).to(device0)), dim=1).numpy().tolist()
-        return torch.sum(torch.Tensor(u).mul(torch.Tensor(candidate)), dim=1).numpy().tolist()
+        '''
+        input: [bs * embedding_size], [bs * (K+1) * embedding_size]
+        output: [bs * (K+1)]
+        '''
+        return torch.matmul(candidate, u.unsqueeze(1).transpose(1,2)).unsqueeze(2)
     
 
 class LSTUR_NewsEncoder(nn.Module):
@@ -242,33 +251,45 @@ class LSTUR_NewsEncoder(nn.Module):
         subtopic = data[1]
         history = data[2]
 
-        print(0.1)
+        #print(0.1)
         #batch_size * browsed_num * topic_embedding_dim
-        topic_embed = self.topic_embedding(topic)
-        subtopic_embed = self.subtopic_embedding(subtopic)
+        topic_embed = self.topic_embedding(topic).squeeze(2)
+        subtopic_embed = self.subtopic_embedding(subtopic).squeeze(2)
 
-        print(0.2)
-        print('CNN:', self.CNN)
-        print('history size:', history.size())
-        print('word_embedding:', self.word_embedding)
+        #print(0.2)
+        #print('CNN:', self.CNN)
+        #print('history size:', history.size())
+        #print('word_embedding:', self.word_embedding)
         history_embed = self.word_embedding(history)
-        print('history embed size:', history_embed.size())
+        #print('history embed size:', history_embed.size())
 
-        bs = history_embed.size()[0]
-        browsed_num = history_embed.size()[1]
-        #bs * 1 * title_max_num * word_embedding_num
-        history_embed = torch.reshape(history_embed, (bs*browsed_num, history_embed.size()[2], history_embed.size()[3])).unsqueeze(1)
-        print('history embed size:', history_embed.size())
-        history_context_represent = self.CNN(history_embed)
+        if len(history.size()) == 3:
+            bs = history_embed.size()[0]
+            browsed_num = history_embed.size()[1]
+            #bs * 1 * title_max_num * word_embedding_num
+            history_embed = torch.reshape(history_embed, (bs*browsed_num, history_embed.size()[2], history_embed.size()[3])).unsqueeze(1)
+        #print('history embed size:', history_embed.size())
+        history_context_represent = self.CNN(history_embed).squeeze(3)
+        history_context_represent = self.ReLU(history_context_represent).transpose(1,2)
 
-        print(0.3)
-
-        history_context_represent = torch.reshape(history_context_represent, (bs, browsed_num, history_context_represent.size()[1], history_context_represent.shape()[2]))
+        #print(0.3)
+        #print(history_context_represent.size())
+        # history_context_represent = torch.reshape(history_context_represent, (bs, browsed_num, history_context_represent.size()[1], history_context_represent.shape()[2]))
+        
         #batch_size * browsed_num * |et|
         e = self.dropout(self.attention(history_context_represent))
+        #print("e.size() = ", e.size())
+
+        if len(history.size()) == 3:
+            e = torch.reshape(e, (bs, browsed_num, e.size()[1]))
+
+        #print("e.size() = ", e.size())
+        #print("subtopic.size() = ", subtopic_embed.size())
+        #print("topic.size() = ", topic_embed.size())
         e = torch.cat((subtopic_embed, e), dim=2)
         e = torch.cat((topic_embed, e), dim=2)
 
+        #print("catted e.size() = ", e.size())
         return e
 
 class LSTUR_UserEncoder(nn.Module):
@@ -285,22 +306,23 @@ class LSTUR_UserEncoder(nn.Module):
         
         self.gru = nn.GRU(self.gru_input_dim, self.gru_input_dim, batch_first=True)
         self.user_embed = nn.Embedding(config.user_embedding_dim, self.gru_input_dim)
+        self.config = config
     
     def forward(self, news_represent, userId):
-        print(1.1)
+        #print(1.1)
         userId_embed = F.dropout(self.user_embed(userId), p=self.config.mask_prob, training=True)
-        print(1.2)
+        #print(1.2)
         #hn: batch_size * gru_input_dim
         #userId_embed:batch_size * gru_input_dim
         if self.ini:
+            userId_embed = userId_embed.transpose(1, 0)
             _, hn = self.gru(news_represent, userId_embed)
-            print(1.3)
-            return hn
+            #print(1.3)
+            return hn.squeeze(0)
         else:
             _, hn = self.gru(news_represent)
             return torch.cat((hn, userId_embed), dim=1)
-        
-
+      
 class LSTUR(nn.Module):
     def __init__(self, config:LSTURconfig , ini):
         super(LSTUR, self).__init__()
@@ -330,92 +352,109 @@ class LSTUR(nn.Module):
         candi_subtopic = data[5] #bs * |K+1| * 1
         candidate = data[6] #bs * |K+1| * title_max_words
 
-        print('history size:', history.size())
-        print('topic size:', topic.size())
+        #print('history size:', history.size())
+        #print('topic size:', topic.size())
 
-        print(0)
+        #print(0)
         news_encode = self.NewsEncoder([topic, subtopic, history])
-        print(1)
+        #print('news_encode:', news_encode.size())
+        #print(1)
         user_encode = self.UserEncoder(news_encode, userId) #batch_size * gru_output_dim
-        print(2)
+        #print('user_encode: ', user_encode.size())
+        #print(2)
         #batch_size * |K+1| * |et|
         candidate_encode = self.NewsEncoder([candi_topic, candi_subtopic, candidate])
-        user_encode = user.unsqueeze(1).transpose(1,2) #bs * gru_output_dim * 1
-        click_prob = torch.matmul(candidate_encode, user_encode).unsqueeze(2)
+        #print('candidate_encode:', candidate_encode.size())
+        user_encode = user_encode.unsqueeze(1).transpose(1,2) #bs * gru_output_dim * 1
+
+        #print(user_encode.size(), candidate_encode.size())
+        click_prob = torch.matmul(candidate_encode, user_encode).squeeze(2)
 
         return click_prob
 
-
-
 class NAML_NewsEncoder(nn.Module):
     def __init__(self, config : NAMLconfig, pretrained_embedding=None):
-        super(NewsEncoder, self).__init__()
+        super(NAML_NewsEncoder, self).__init__()
         self.config = config
         if pretrained_embedding is None:
             self.word_embedding = nn.Embedding(config.vocab_size, config.embedding_dim, padding_idx=0)
         else:
             self.word_embedding = nn.Embedding.from_pretrained(pretrained_embedding,freeze=False)
         self.topic_embedding = nn.Embedding(config.topic_num, config.topic_embedding_dim, padding_idx=0)
-        self.subtopic_embedding = nn.Embedding(config.subtopic_num, config.topic_embedding_dim, padding_idx=0)
+        self.subtopic_embedding = nn.Embedding(config.sub_topic_num, config.topic_embedding_dim, padding_idx=0)
         
-        self.title_abstract_cnn = nn.Conv2d(config.browsed_max_num, config.filter_num, (config.window_size, config.embedding_dim), padding=(1, 0))
+        self.title_abstract_cnn = nn.Conv2d(1, config.filter_num, (config.window_size, config.embedding_dim), padding=(1, 0))
         self.abstract_cnn = nn.Conv2d(1, config.filter_num, (config.window_size, config.embedding_dim), padding=(1, 0))
-        self.title_attention = Attention(config.query_dim, config.filter_num)
-        self.abstract_attention = Attention(config.query_dim, config.filter_num)
+        self.title_attention = AdditiveAttention(config.query_dim, config.filter_num)
+        self.abstract_attention = AdditiveAttention(config.query_dim, config.filter_num)
 
         self.topic_dense = nn.Linear(config.topic_embedding_dim, config.filter_num)
         self.subtopic_dense = nn.Linear(config.topic_embedding_dim, config.filter_num)
 
-        self.view_attention = Attention(config.query_dim, config.filter_num)
+        self.view_attention = AdditiveAttention(config.query_dim, config.filter_num)
     
     def forward(self, topic, subtopic, title, abstract):
 
         #title
         # bs * browsed_max_num * title_words_num * embedding_dim
+        #print("title.size = ", title.size())
         title_embedded = F.dropout(self.word_embedding(title), p=self.config.dropout)
 
         # bs * browsed_max_num * title_words_num * filter_num
-        title_cnn = self.title_abstract_cnn(title_embedded)
-        title_cnn = F.dropout(F.relu(title_cnn), p=self.config.dropout).transpose(3, 2)
+        bs = title_embedded.size()[0]
+        browsed_max_num = title_embedded.size()[1]
+
+        #print('title_embedded.size = ', title_embedded.size())
+        title_embedded = Unfold(title_embedded, bs, browsed_max_num).unsqueeze(1)
+        title_cnn = self.title_abstract_cnn(title_embedded).squeeze(3)
+        title_cnn = F.dropout(F.relu(title_cnn), p=self.config.dropout).transpose(1, 2)
+        #print("title_cnn.size = ", title_cnn.size())
+        title_cnn = Fold(title_cnn, bs, browsed_max_num)
 
         # bs * browsed_num * filter_num
         title_att = self.title_attention(title_cnn)
+        #print("title_att.size()", title_att.size())
 
         # abstract
         # bs * browsed_num * abstract_len * embedding_dim
         abstract_embedded = F.dropout(self.word_embedding(abstract), p=self.config.dropout)
+        #print("abstract_embedded.size = ", abstract_embedded.size())
 
         # bs * browsed_num * filter_num * abstract_len
-        abstract_cnn = self.title_abstract_cnn(abstract_embedded) #########
+        abstract_embedded = Unfold(abstract_embedded, bs, browsed_max_num).unsqueeze(1)
+        abstract_cnn = self.title_abstract_cnn(abstract_embedded)
+        abstract_cnn = Fold(abstract_cnn, bs, browsed_max_num)
         
-        # bs * abstract_len * filter_num
-        abstract_cnn = F.dropout(F.relu(abstract_cnn), p=self.config.dropout).transpose(1, 2)
-        # bs * filter_num
+        # bs * browsed_num * abstract_len * filter_num
+        abstract_cnn = F.dropout(F.relu(abstract_cnn), p=self.config.dropout).transpose(2, 3)
+        # bs * browsed_num * filter_num
         abstract_att = self.abstract_attention(abstract_cnn)
+        #print('abstract_att.size = ', abstract_att.size())
 
         # topic
-        # bs * topic_embedding_dim
-        topic_embedded = self.topic_embedding(topic).squeeze(dim=1)
-        # bs * filter_num
+        # bs * browsed_num * filter_num
+        topic_embedded = self.topic_embedding(topic).squeeze(dim=2)
+        #print("topic_embeded.size = ", topic_embedded.size())
         topic_dense = F.relu(self.topic_dense(topic_embedded))
+        #print("topic_dense.size = ", topic_dense.size())
 
         # subtopic
-        # bs * topic_embedding_dim
-        subtopic_embedded = self.subtopic_embedding(subtopic).squeeze(dim=1)
-        # bs * filter_num
+        # bs * browsed_num * filter_num
+        subtopic_embedded = self.subtopic_embedding(subtopic).squeeze(dim=2)
         subtopic_dense = F.relu(self.subtopic_dense(subtopic_embedded))
 
+        #print(title_att.size(), abstract_att.size(), topic_dense.size(), subtopic_dense.size())
         # news_r
-        # bs * 4 * filter_num
-        att_input = torch.stack([title_att, abstract_att, topic_dense, subtopic_dense], dim=1)
+        # bs * browsed_num * 4 * filter_num
+        att_input = torch.stack([title_att, abstract_att, topic_dense, subtopic_dense], dim=2)
 
-        # bs * filter_num
+        # bs * browsed_num * filter_num
         news_r = self.view_attention(att_input)
         return news_r
 
 class NAML_UserEncoder(nn.Module):
     def __init__(self, config):
-        super(UserEncoder, self).__init__()
+        super(NAML_UserEncoder, self).__init__()
         self.config = config
         self.attention = AdditiveAttention(config.query_dim, config.filter_num)
     
@@ -429,8 +468,8 @@ class NAML(nn.Module):
         super(NAML, self).__init__()
         self.config = config
         self.pretrained_embedding = pretrained_embedding
-        self.NewsEncoder = NewsEncoder(config, pretrained_embedding)
-        self.UserEncoder = UserEncoder(config)
+        self.NewsEncoder = NAML_NewsEncoder(config, pretrained_embedding)
+        self.UserEncoder = NAML_UserEncoder(config)
     
     def forward(self, data):
 
@@ -445,25 +484,48 @@ class NAML(nn.Module):
         candi_topic = data[4]
         candi_subtopic = data[5]
         #bs * candidate_num * title_words_num
-        candidate = date[6]
+        candidate = data[6]
         candidate_abstract = data[7]
 
         # bs * candidate_num *filter_num
-        candidate_news_r = self.NewsEncoder(candi_topic, candi_subtopic, candidate, candidate_abstract)
+        candidate_encode = self.NewsEncoder(candi_topic, candi_subtopic, candidate, candidate_abstract)
+
         # bs * browsed_num * filter_num
-        browsed_news_r = self.NewsEncoder(topic, subtopic, history, abstract)
+        news_encode = self.NewsEncoder(topic, subtopic, history, abstract)
+
         # bs * filternum
-        user_r = self.UserEncoder(browsed_news_r)
-        # batch_size, 1+K
-        click_prob = torch.stack([torch.bmm(user_r.unsqueeze(dim=1), x.unsqueeze(dim=2)).flatten()
-                    for x in candidate_news_r], dim=1)
+        user_encode = self.UserEncoder(news_encode)
+
+        # bs * candidate_num
+        click_prob = torch.matmul(candidate_encode, user_encode.unsqueeze(1).transpose(1,2)).squeeze(2)
         return click_prob
     
-    def get_news_r(self, title):
-        return self.NewsEncoder(title)
-    
-    def get_user_r(self, browsed_news_r):
-        return self.UserEncoder(browsed_news_r.to(device))
-    
-    def test(self, user_r, candidate_news_r):
-        return torch.bmm(user_r.to(device).unsqueeze(dim=1), candidate_news_r.to(device).unsqueeze(dim=2)).flatten()
+'''
+NRMSmodel = NRMS(NRMSconfig)
+LSTURmodel = LSTUR(LSTURconfig, 1)
+NAMLmodel = NAML(NAMLconfig)
+batch_size = 64
+title_words_num = 48
+browsed_max_num = 50
+candidate_num = 50
+K = 1
+abstract_max_words = 200
+
+# hist = torch.randn(batch_size, browsed_max_num, title_words_num).long()
+# candidate= torch.randn(batch_size, K+1, title_words_num).long()
+
+userid = torch.LongTensor(np.random.rand(batch_size, 1))
+topic = torch.LongTensor(np.random.rand(batch_size, browsed_max_num, 1))
+subtopic = torch.LongTensor(np.random.rand(batch_size, browsed_max_num, 1))
+hist = torch.LongTensor(np.random.rand(batch_size, browsed_max_num, title_words_num))
+abstract = torch.LongTensor(np.random.rand(batch_size, browsed_max_num, abstract_max_words))
+candi_topic = torch.LongTensor(np.random.rand(batch_size, K+1, 1))
+candi_subtopic = torch.LongTensor(np.random.rand(batch_size, K+1, 1))
+candidate = torch.LongTensor(np.random.rand(batch_size, K+1, title_words_num))
+candi_abstract = torch.LongTensor(np.random.rand(batch_size, K+1, abstract_max_words))
+
+# output = NRMSmodel([hist, candidate])
+# output = LSTURmodel([userid, topic, subtopic, hist, candi_topic, candi_subtopic, candidate])
+output = NAMLmodel([topic, subtopic, hist, abstract, candi_topic, candi_subtopic, candidate, candi_abstract])
+#print(output.size())
+'''

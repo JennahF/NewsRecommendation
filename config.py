@@ -30,12 +30,12 @@ class LSTURconfig():
 class NAMLconfig():
     query_dim = 200
     filter_num = 400
-    vocab_size = 72311 + 1
+    vocab_size = 98177 + 1
     embedding_dim = 300
     topic_num = 18 + 1
     sub_topic_num = 268+1
     topic_embedding_dim = 100
-    windows_size = 3
+    window_size = 3
     browsed_max_num = 50 #
     dropout = 0.2
     abstract_max_len = 200

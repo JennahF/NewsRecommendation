@@ -1,7 +1,8 @@
 import torch
 import argparse
 import config
-from utils import DataLoader
+from utils.DataLoader import myCandidateLoader, myNewsLoader, myTestDataLoader, myUserLoader
+# from utils import DataLoader
 from model.model import NRMS, LSTUR
 import os
 import pickle
@@ -31,9 +32,24 @@ parser.add_argument(
 )
 
 parser.add_argument(
+    '-testdata_news',
+    default='./temp/test_news_vec.pickle'
+)
+
+parser.add_argument(
+    '-testdata_history',
+    default='./temp/test_behavior_history.pickle'
+)
+
+parser.add_argument(
+    '-testdata_candidate',
+    default='./temp/test_behavior_candidate.pickle'
+)
+
+parser.add_argument(
     '-batch_size',
     type=int,
-    default=25
+    default=2
 )
 
 parser.add_argument(
@@ -95,7 +111,9 @@ def evaluate(impression_index, preds, label):
                 ndcg10_scores.append(ndcg10)
     return np.mean(auc_scores), np.mean(mrr_scores), np.mean(ndcg5_scores), np.mean(ndcg10_scores)
 
-def testModel(model, test_loader):
+
+
+def testModel(model):
     '''testloader:
         [
             [uid, history, candidate[[news1],[news2],...], label[0,1,...]]
@@ -103,13 +121,11 @@ def testModel(model, test_loader):
     '''
     model.eval()
 
-    #news and user encoding
-    test_output = []
-    test_label = []
     '''
         [
             [u],...,[u] #impression size*sample num
         ]
+    '''
     '''
     preds = []
     true = []
@@ -121,52 +137,111 @@ def testModel(model, test_loader):
         history, candidate = testdata['history'], testdata['candidate']
         print(history.size())
 
-        cpu_history, gpu1_history, gpu2_history, gpu3_history, gpu4_history = history.split(5, dim=0)
-        cpu_candidate, gpu1_candidate, gpu2_candidate, gpu3_candidate, gpu4_candidate = candidate.split(5, dim=0)
-        cpu_click_prob = model([cpu_history, cpu_candidate])
+        # cpu_history, gpu1_history, gpu2_history, gpu3_history, gpu4_history = history.split(5, dim=0)
+        # cpu_candidate, gpu1_candidate, gpu2_candidate, gpu3_candidate, gpu4_candidate = candidate.split(5, dim=0)
+        click_prob = model([history, candidate])
 
-        gpu_history = torch.cat([gpu1_history, gpu2_history, gpu3_history, gpu4_history])
-        gpu_candidate = torch.cat([gpu1_candidate, gpu2_candidate, gpu3_candidate, gpu4_candidate])
-        gpu_click_prob = model([gpu_history.to(device), gpu_candidate.to(device)])
-        click_prob = torch.cat((cpu_click_prob, gpu_click_prob))
-        # if i == 0:
-        #     print(click_prob.size())
-        #     preds = click_prob.transpose(0,1).squeeze(0)
-        # else:
-        #     preds = torch.cat((preds, click_prob.transpose(0,1).squeeze(0)))
+        # gpu_history = torch.cat([gpu1_history, gpu2_history, gpu3_history, gpu4_history])
+        # gpu_candidate = torch.cat([gpu1_candidate, gpu2_candidate, gpu3_candidate, gpu4_candidate])
+        # gpu_click_prob = model([gpu_history.to(device), gpu_candidate.to(device)])
+        # click_prob = torch.cat((cpu_click_prob, gpu_click_probs))
+        with torch.no_grad():
+            if i == 0:
+                # print(click_prob.size())
+                preds = click_prob.transpose(0,1).squeeze(0)
+            else:
+                preds = torch.cat((preds, click_prob.transpose(0,1).squeeze(0)))
         
-        del gpu_history
-        del gpu_candidate
-        del cpu_history
-        del cpu_candidate
-        del gpu1_candidate
-        del gpu2_candidate
-        del gpu3_candidate
-        del gpu4_candidate
-        del gpu1_history
-        del gpu2_history
-        del gpu3_history
-        del gpu4_history
-        gc.collect()
+        # del gpu_history
+        # del gpu_candidate
+        # del cpu_history
+        # del cpu_candidate
+        # del gpu1_candidate
+        # del gpu2_candidate
+        # del gpu3_candidate
+        # del gpu4_candidate
+        # del gpu1_history
+        # del gpu2_history
+        # del gpu3_history
+        # del gpu4_history
+        # gc.collect()
+    '''
+    print('start testing...')
+
+    with open(params.testdata_news, 'rb') as v:
+        news_vec = pickle.load(v)
+    news_loader = myNewsLoader(news_vec, params.model_name, params.batch_size)
+    encoded_news = []
+    news_id = []
+    with torch.no_grad():
+        for i in range(news_loader.batch_num):
+            #[1, bs], [bs*1, bs*1, bs*title_words_num, bs*abstract_words_num]
+            newsid, news_vector = news_loader[i]
+            #[bs * embedding_dim]
+            news = model.module.get_news_encode(torch.Tensor(news_vector).cuda())
+
+            if i == 0:
+                encoded_news = news
+                news_id = newsid
+            else:
+                #[news_num * embedding_size]
+                encoded_news = torch.cat(encoded_news, news)
+                news_id = news_id + newsid
+
+    encoded_news = {news_id[i]: encoded_news[i] for i in range(len(news_id))}
+    
+    with open(params.testdata_history, 'rb') as v:
+        test_vec = pickle.load(v)
+
+    user_loader = myUserLoader(encoded_news, test_vec[0], test_vec[1], params.batch_size, params.model_name)
+    encoded_user = []
+    with torch.no_grad():
+        for i in range(user_loader.batch_num):
+            #[bs * browsed_num * embedding_dim]
+            if params.model_name != 'LSTUR':
+                history = user_loader[i]
+                user = model.moudel.get_user_encode(torch.Tensor(history).cuda())
+            else:
+                history, userid = user_loader[i]
+                user = model.module.get_user_encode(torch.Tensor(history).cuda(), torch.Tensor(userid).cuda())
+
+            if i == 0:
+                encoded_user = user
+            else:
+                #[sample_num * embedding_size]
+                encoded_user = torch.cat(encoded_user, user)
+
+    with open(params.testdata_candidate, 'rb') as v:
+            candi_vec = pickle.load(v)
+    candidate_loader = myCandidateLoader(candi_vec[0], encoded_user, encoded_news, params.batch_size)
+    probs = []
+    with torch.no_grad():
+        for i in range(candidate_loader.batch_num):
+            #[bs * candidate_max_num * embedding_size]
+            #[bs * embedding_size]
+            candidate, user = candidate_loader[i]
+            #[bs * candidate_max_num]
+            prob = torch.bmm(candidate, user.unsqueeze(1).transpose(1,2)).squeeze(2)
+
+            if i == 0:
+                probs = torch.reshape(prob, (1, prob.size()[0]*prob.size()[1]))
+            else:
+                probs = torch.cat(probs, torch.reshape(prob, (1, prob.size()[0]*prob.size()[1])))
         
-    impression_index = test_loader.getImpressionIndex()
-    true = test_loader.getLabels()
+    true = candi_vec[1]
         
-    # auc, mrr, ndcg5, ndcg10 = evaluate(impression_index, preds.tolist(), true.tolist())
-    # print('auc:', auc)
-    # print('mrr:', mrr)
-    # print('ndcg5:', ndcg5)
-    # print('ndcg10:', ndcg10)
+    auc, mrr, ndcg5, ndcg10 = evaluate(impression_index, probs.tolist(), true.tolist())
+    print('auc:', auc)
+    print('mrr:', mrr)
+    print('ndcg5:', ndcg5)
+    print('ndcg10:', ndcg10)
 
 def main():
 
-    os.environ["CUDA_VISIBLE_DEVICES"] = "0,1,2,3"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "1,2,3"
 
-    with open(params.testdata, 'rb') as v:
-        test_vec = pickle.load(v)
-    myTestLoader = DataLoader.myTestDataLoader(test_vec, params.batch_size)
-
-    print('test data loaded!')
+    
+    # myTestLoader = DataLoader.myTestDataLoader(test_vec, params.batch_size)
 
     if params.model_name == 'NRMS':
         model = NRMS(config.NRMSconfig)
@@ -177,8 +252,8 @@ def main():
 
     model.load_state_dict(torch.load(FindModelPath()), False)
 
-    model = nn.DataParallel(model, device_ids=[0,1,2,3])
-    model.to(device)
+    model = nn.DataParallel(model, device_ids=[1,2,3])
+    model.cuda()
     # model = model.to(device)()
 
     # model = model.to(device)()
@@ -188,7 +263,7 @@ def main():
 
     torch.cuda.empty_cache()
 
-    testModel(model, myTestLoader)
+    testModel(model)
 
 if __name__ == '__main__':
     main()

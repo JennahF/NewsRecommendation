@@ -38,22 +38,15 @@ def browsed_to_max_num(his_vec, topic_vec, subtopic_vec, abstract_vec):
             abstract_vec = abstract_vec[0:config.NRMSconfig.browsed_max_num]
     return his_vec, topic_vec, subtopic_vec, abstract_vec
 
-def candidate_to_max_num(candi_topic, candi_subtopic, candidate, candi_abstract, label):
-    dis = config.NRMSconfig.candidate_max_num - len(candi_topic)
+def candidate_to_max_num(candi_id, label):
+    dis = config.NRMSconfig.candidate_max_num - len(label)
     if dis > 0:
-        for i in range(dis):
-            candi_topic.append([0])
-            candi_subtopic.append([0])
-            candidate.append([0] * config.NRMSconfig.title_max_words_num)
-            candi_abstract.append([0] * config.NAMLconfig.abstract_max_len)
-        label = label +  [-1] * (dis)
+        candi_id = candi_id + ['0'] * dis
+        label = label +  [-1] * dis
     elif dis < 0:
-        candi_topic = candi_topic[0:config.NRMSconfig.candidate_max_num]
-        candi_subtopic = candi_subtopic[0:config.NRMSconfig.candidate_max_num]
-        candidate = candidate[0:config.NRMSconfig.candidate_max_num]
-        candi_abstract = candi_abstract[0:config.NRMSconfig.candidate_max_num]
+        candi_id = candi_id[0:config.NRMSconfig.candidate_max_num]
         label = label[0:config.NRMSconfig.candidate_max_num]
-    return candi_topic, candi_subtopic, candidate, candi_abstract, label
+    return candi_id, label
 
 def abstract_to_max_len(abstract):
     dis = config.NAMLconfig.abstract_max_len - len(abstract)
@@ -312,7 +305,7 @@ def ToTestData(behav_vec, user_dic, news):
     print('max_candidate_test = ', max_candidate)
     return U, T, ST, H, A, CT, CST, C, CA, L, I
 
-def vectorize_behaviors(dir, dic, news, behavior_cache, test):
+def vectorize_behaviors(dir, dic, news, behavior_cache):
     '''
         [
             [userId, t, history, pos_sample, neg_sample]
@@ -324,6 +317,8 @@ def vectorize_behaviors(dir, dic, news, behavior_cache, test):
     with open(file, 'r', encoding='utf8') as f:
         lines = f.readlines()
         for i in range(len(lines)):
+            if i == 512:
+                break
             data = lines[i].rstrip('\n').split('\t')
             userId = data[1]
             history = data[3].split()
@@ -339,20 +334,58 @@ def vectorize_behaviors(dir, dic, news, behavior_cache, test):
             behav_vec.append([userId, history, pos_sample, neg_sample])
     # with open(behavior_cache, 'wb') as f: 
     #     pickle.dump(behav_vec, f) 
-
-    if test:
-        U, T, ST, H, A, CT, CST, C, CA, L, I = ToTestData(behav_vec, dic, news)
-        with open(behavior_cache, 'wb') as f: 
-            pickle.dump([U, T, ST, H, [], CT, CST, C, [], L, I], f) 
-        print('vectorizing finished!')
-
-    else:
-        U, T, ST, H, A, CT, CST, C, CA = ToTrainData(behav_vec, dic, news)
-        with open(behavior_cache, 'wb') as f: 
-            pickle.dump([U, T, ST, H, A, CT, CST, C, CA], f) 
-        print('vectorizing finished!')
+    U, T, ST, H, A, CT, CST, C, CA = ToTrainData(behav_vec, dic, news)
+    with open(behavior_cache, 'wb') as f: 
+        pickle.dump([U, T, ST, H, A, CT, CST, C, CA], f) 
+    print('vectorizing train data finished!')
                 
 
+def vectorize_test_history(dir, behav_dic, news, test_behavior_history):
+    print("start vectorizing...")
+    file = dir + 'behaviors.tsv'
+    userid = []
+    history = []
+    behav_vec = []
+    with open(file, 'r', encoding='utf8') as f:
+        lines = f.readlines()
+        for i in range(len(lines)):
+            if i % 10000 == 0:
+                print(i, len(lines))
+            data = lines[i].rstrip('\n').split('\t')
+            userId = data[1]
+            his = data[3].split()
+            userid.append(behav_dic.getId(remove_sig(userId)))
+            history.append(his)
+    with open(test_behavior_history, 'wb') as f:
+        pickle.dump([userid, history], f)
+    print('vectorizing test history finished!')
+
+def vectorize_test_candidate(dir, news, test_behavior_history):
+    print("start vectorizing...")
+    file = dir + 'behaviors.tsv'
+    candidate_id = []
+    label = []
+    with open(file, 'r', encoding='utf8') as f:
+        lines = f.readlines()
+        for i in range(len(lines)):
+            if i % 10000 == 0:
+                print(i, len(lines))
+            data = lines[i].rstrip('\n').split('\t')
+            impression = data[4].split()
+            ids = []
+            l = []
+            for i in range(len(impression)):
+                if i == config.NRMSconfig.candidate_max_num:
+                    break
+                imp = impression[i].split('-')
+                ids.append(imp[0])
+                l.append(int(imp[1]))
+            ids, l = candidate_to_max_num(ids, l)
+            label = label + l
+            candidate_id.append(ids)
+    with open(test_behavior_history, 'wb') as f:
+        pickle.dump([candidate_id, label], f)
+    print('vectorizing test candidate finished!')
 
 def main():
     path = './dataset/'
@@ -367,6 +400,7 @@ def main():
             topic_dic, subtopic_dic, title_dic, behav_dic = dictionary[0], dictionary[1], dictionary[2], dictionary[3]
             print('topic num:', topic_dic.vocab_len)
             print('sub-topic num:', subtopic_dic.vocab_len)
+            print('title words num:', title_dic.vocab_len)
             print('behav num:', behav_dic.vocab_len)
     else:
         print("news dictionary not found!")
@@ -404,15 +438,45 @@ def main():
 
     
     #用户行为向量化
-    behaviors_cache = ['./temp/train_behavior.pickle', './temp/test_behavior.pickle']
-    for i in range(2):
-        if os.path.exists(behaviors_cache[i]):
-            print(behaviors_cache[i][7:-16], "behavior found!\n")
-        else:
-            print(behaviors_cache[i][7:-16], "behavior not found!")
-            with open(vec_cache[i], 'rb') as f:
-                news = pickle.load(f)
-            vectorize_behaviors(dirs[i], behav_dic, news, behaviors_cache[i], i)
+    # behaviors_cache = ['./temp/train_behavior.pickle', './temp/test_.pickle']
+    # for i in range(2):
+    #     if os.path.exists(behaviors_cache[i]):
+    #         print(behaviors_cache[i][7:-16], "behavior found!\n")
+    #     else:
+    #         print(behaviors_cache[i][7:-16], "behavior not found!")
+    #         if i == 0:
+    #             with open(vec_cache[i], 'rb') as f:
+    #                 news = pickle.load(f)
+    #             vectorize_behaviors(dirs[i], behav_dic, news, behaviors_cache[i])
+    #         else:
+    #             vectorize_test_behaviors(dirs[i], behav_dic, )
+    train_behavior_cache = './temp/train_behavior.pickle'
+    if os.path.exists(train_behavior_cache):
+        print(train_behavior_cache[7:-16], "behavior found!\n")
+    else:
+        print(train_behavior_cache[7:-16], "behavior not found!")
+        with open(vec_cache[0], 'rb') as f:
+            news = pickle.load(f)
+        vectorize_behaviors(dirs[0], behav_dic, news, train_behavior_cache)
+    
+    test_behavior_history = './temp/test_behavior_history.pickle'
+    if os.path.exists(test_behavior_history):
+        print("test behavior history found!\n")
+    else:
+        print("test behavior history not found!")
+        with open(vec_cache[1], 'rb') as f:
+            news = pickle.load(f)
+        vectorize_test_history(dirs[1], behav_dic, news, test_behavior_history)
+    
+    test_behavior_candidate = './temp/test_behavior_candidate.pickle'
+    if os.path.exists(test_behavior_candidate):
+        print("test behavior candidate found!\n")
+    else:
+        print("test behavior candidate not found!")
+        with open(vec_cache[1], 'rb') as f:
+            news = pickle.load(f)
+        vectorize_test_candidate(dirs[1], news, test_behavior_candidate)
+
 
 if __name__ == '__main__':
     main()

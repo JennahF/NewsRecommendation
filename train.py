@@ -48,7 +48,7 @@ parser.add_argument(
 parser.add_argument(
     '-batch_size',
     type=int,
-    default=512
+    default=64
 )
 
 parser.add_argument(
@@ -184,7 +184,7 @@ def testModel(model, test_loader, model_name):
         if params.model_name == 'NRMS':
             click_prob = model([history.cuda(), candidate.cuda()])
         elif params.model_name == 'LSTUR':
-            click_prob = model([uid.cuda(), topic.cuda(), subtopic.cuda(), history.cuda(), candi_topic.cuda(), candi_subtopic.cuda(), candidate.cuda()])
+            click_prob = model([uid.cuda(1), topic.cuda(1), subtopic.cuda(1), history.cuda(1), candi_topic.cuda(1), candi_subtopic.cuda(1), candidate.cuda(1)])
         
         if i == 0:
             print(click_prob.size())
@@ -227,20 +227,21 @@ def trainModel(model, train_loader, optimizer):
         for i in range(train_loader.batch_num):
             minibatch = train_loader[i]
             uid, topic, subtopic, history, candi_topic, candi_subtopic, candidate, abstract, candi_abstract = \
-                        minibatch['userId'], minibatch['topic'], minibatch['sub-topic'], minibatch['history'], \
-                        minibatch['candi-topic'], minibatch['candi-subtopic'], minibatch['candidate'], minibatch['abstract'], minibatch['candi-abstract']
+                        minibatch['userId'].cuda(1), minibatch['topic'].cuda(1), minibatch['sub-topic'].cuda(1), minibatch['history'].cuda(1), \
+                        minibatch['candi-topic'].cuda(1), minibatch['candi-subtopic'].cuda(1), minibatch['candidate'].cuda(1), minibatch['abstract'].cuda(1), minibatch['candi-abstract']
 
             optimizer.zero_grad()
             if params.model_name == 'NRMS':
-                click_prob = model([history.cuda(), candidate.cuda()])
+                click_prob = model([history, candidate])
                 loss = NegSampleloss(click_prob)
             elif params.model_name == 'LSTUR':
                 print('h size:', history.size())
                 print('topic size:', topic.size())
-                click_prob = model([uid.cuda(), topic.cuda(), subtopic.cuda(), history.cuda(), candi_topic.cuda(), candi_subtopic.cuda(), candidate.cuda()])
+                click_prob = model([uid, topic, subtopic, history, candi_topic, candi_subtopic, candidate])
                 loss = NegSampleloss(click_prob)
             elif params.model_name == 'NAML':
-                click_prob = model([topic.cuda(), subtopic.cuda(), history.cuda(), abstract.cuda(), candi_topic.cuda(), candi_subtopic.cuda(), candi_data.cuda(), candi_abstract.cuda()])
+                click_prob = model([topic, subtopic, history, abstract, candi_topic, candi_subtopic, candidate, candi_abstract])
+                loss = NegSampleloss(click_prob)
             else:
                 pass
 
@@ -268,19 +269,21 @@ def trainModel(model, train_loader, optimizer):
 
 def main():
 
+    os.environ["CUDA_VISIBLE_DEVICES"] = "1,2,3"
+
+    # if torch.cuda:
+    #     torch.cuda.set_device(device)
+
     print('Start loading data!')
 
-    with open(params.traindata, 'rb') as t, open(params.testdata, 'rb') as v:
+    with open(params.traindata, 'rb') as t:
         train_vec = pickle.load(t)
-        # test_vec = pickle.load(v)
 
     myTrainLoader = DataLoader.myTrainDataLoader(train_vec, params.batch_size)
-    # myTestLoader = DataLoader.myTestDataLoader(test_vec, params.batch_size)
 
-    print("Data loading finished!")
+    print("Data loading finished!", myTrainLoader.batch_num)
 
     if params.model_name == 'NRMS':
-        # model = NRMS(config.NRMSconfig).to(device)
         model = NRMS(config.NRMSconfig)
     elif params.model_name == 'LSTUR':
         model = LSTUR(config.LSTURconfig, params.ini)
@@ -291,13 +294,12 @@ def main():
 
     print(sum(param.numel() for param in model.parameters()))
 
-    model = nn.DataParallel(model)
-    model = model.cuda()
-
     if params.load_model:
         model.load_state_dict(torch.load(FindModelPath()), False)
+    
+    model = nn.DataParallel(model, device_ids=[1,2,3])
+    model = model.cuda(1)
 
-    # trainModel(model, myTrainLoader, myTestLoader, optimizer)
     trainModel(model, myTrainLoader, optimizer)
 
 if __name__ == '__main__':
